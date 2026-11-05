@@ -4,3 +4,6 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 *.pyc
+
+# Generated analyzer output bundles (raw device evidence)
+output_*/
