@@ -1,0 +1,223 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Android Process Analyzer report",
+  "description": "Output of `AndroidProcessAnalyzer.py analyze --format json` (schema_version 3.0). Sections are null when not collected. Values are read-only snapshots taken over adb.",
+  "type": "object",
+  "required": ["schema_version", "report", "sections_status", "errors"],
+  "properties": {
+    "schema_version": { "const": "3.0" },
+    "report": {
+      "type": "object",
+      "required": ["status", "tool_version", "generated_at_utc", "duration_ms"],
+      "properties": {
+        "status": { "type": "string" },
+        "tool_version": { "type": "string" },
+        "generated_at_utc": { "type": "string", "format": "date-time" },
+        "duration_ms": { "type": "integer" }
+      }
+    },
+    "sections_status": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["status"],
+        "properties": {
+          "status": { "enum": ["complete", "unavailable"] }
+        }
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/error" }
+    },
+    "identity": {
+      "type": ["object", "null"],
+      "required": ["pid", "ppid", "name", "uid", "gid", "state", "thread_count"],
+      "properties": {
+        "pid": { "type": "integer" },
+        "ppid": { "type": "integer" },
+        "name": { "type": "string" },
+        "cmdline": { "type": ["string", "null"] },
+        "exe": { "type": ["string", "null"] },
+        "cwd": { "type": ["string", "null"] },
+        "uid": { "type": "integer" },
+        "gid": { "type": "integer" },
+        "groups": { "type": "array", "items": { "type": "integer" } },
+        "start_time_ticks": { "type": "integer" },
+        "state": { "type": "string" },
+        "thread_count": { "type": "integer" }
+      }
+    },
+    "memory": {
+      "type": ["object", "null"],
+      "required": ["totals", "by_class", "artifacts"],
+      "properties": {
+        "totals": { "$ref": "#/$defs/memorySummary" },
+        "by_class": { "type": "object" },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["key", "name", "memory"],
+            "properties": {
+              "key": { "type": "string" },
+              "name": { "type": "string" },
+              "path": { "type": ["string", "null"] },
+              "memory": { "$ref": "#/$defs/memoryBlock" },
+              "pss_percent_of_process": { "type": ["number", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "threads": {
+      "type": ["object", "null"],
+      "required": ["threads", "summary"],
+      "properties": {
+        "threads": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["tid", "name", "state"],
+            "properties": {
+              "tid": { "type": "integer" },
+              "name": { "type": "string" },
+              "state": { "type": "string" },
+              "state_readable": { "type": "string" },
+              "utime_ms": { "type": ["number", "null"] },
+              "stime_ms": { "type": ["number", "null"] }
+            }
+          }
+        },
+        "summary": {
+          "type": "object",
+          "required": ["total"],
+          "properties": { "total": { "type": "integer" } }
+        }
+      }
+    },
+    "file_descriptors": {
+      "type": ["object", "null"],
+      "required": ["fds", "summary", "truncated"],
+      "properties": {
+        "fds": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["fd", "fd_type"],
+            "properties": {
+              "fd": { "type": "integer" },
+              "fd_type": { "type": "string" },
+              "path": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "summary": {
+          "type": "object",
+          "required": ["total"],
+          "properties": { "total": { "type": "integer" } }
+        },
+        "truncated": { "type": "boolean" }
+      }
+    },
+    "cpu": {
+      "type": ["object", "null"],
+      "required": ["utime_ms", "stime_ms", "total_cpu_ms"],
+      "properties": {
+        "utime_ms": { "type": "number" },
+        "stime_ms": { "type": "number" },
+        "total_cpu_ms": { "type": "number" }
+      }
+    },
+    "io": {
+      "type": ["object", "null"],
+      "properties": {
+        "rchar": { "$ref": "#/$defs/nullableInt" },
+        "wchar": { "$ref": "#/$defs/nullableInt" },
+        "syscr": { "$ref": "#/$defs/nullableInt" },
+        "syscw": { "$ref": "#/$defs/nullableInt" },
+        "read_bytes": { "$ref": "#/$defs/nullableInt" },
+        "write_bytes": { "$ref": "#/$defs/nullableInt" },
+        "cancelled_write_bytes": { "$ref": "#/$defs/nullableInt" }
+      }
+    },
+    "limits_and_oom": {
+      "type": ["object", "null"],
+      "required": ["limits", "oom_score", "oom_score_adj"],
+      "properties": {
+        "limits": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/limit" }
+        },
+        "oom_score": { "$ref": "#/$defs/nullableInt" },
+        "oom_score_adj": { "$ref": "#/$defs/nullableInt" }
+      }
+    },
+    "security": {
+      "type": ["object", "null"],
+      "required": ["selinux_context", "capabilities_effective", "capabilities_permitted", "capabilities_bounding"],
+      "properties": {
+        "selinux_context": { "type": ["string", "null"] },
+        "capabilities_effective": { "$ref": "#/$defs/stringList" },
+        "capabilities_permitted": { "$ref": "#/$defs/stringList" },
+        "capabilities_bounding": { "$ref": "#/$defs/stringList" },
+        "seccomp_mode": { "$ref": "#/$defs/nullableInt" },
+        "no_new_privs": { "type": ["string", "null"] }
+      }
+    },
+    "cgroups_namespaces": { "type": ["object", "null"] },
+    "binder": { "type": ["object", "null"] },
+    "network": { "type": ["object", "null"] },
+    "android_meminfo": { "type": ["object", "null"] },
+    "dependencies": { "type": ["object", "null"] },
+    "environment": { "type": ["object", "null"] },
+    "checks": { "type": "array" },
+    "notes": { "type": "array" },
+    "limitations": { "type": "array" },
+    "glossary": { "type": "object" }
+  },
+  "$defs": {
+    "nullableInt": { "type": ["integer", "null"] },
+    "stringList": { "type": "array", "items": { "type": "string" } },
+    "error": {
+      "type": "object",
+      "required": ["component", "error", "impact", "required_access"],
+      "properties": {
+        "component": { "type": "string" },
+        "error": { "type": "string" },
+        "impact": { "type": "string" },
+        "required_access": { "type": "string" }
+      }
+    },
+    "limit": {
+      "type": "object",
+      "required": ["soft", "hard"],
+      "properties": {
+        "soft": { "type": ["integer", "null"] },
+        "hard": { "type": ["integer", "null"] }
+      }
+    },
+    "memorySummary": {
+      "type": "object",
+      "properties": {
+        "pss_kb": { "type": ["integer", "null"] },
+        "rss_kb": { "type": ["integer", "null"] },
+        "uss_kb": { "type": ["integer", "null"] },
+        "virtual_kb": { "type": ["integer", "null"] },
+        "swap_pss_kb": { "type": ["integer", "null"] },
+        "by_backing": { "type": "object" }
+      }
+    },
+    "memoryBlock": {
+      "type": "object",
+      "properties": {
+        "virtual_kb": { "type": ["integer", "null"] },
+        "rss_kb": { "type": ["integer", "null"] },
+        "pss_kb": { "type": ["integer", "null"] },
+        "uss_kb": { "type": ["integer", "null"] },
+        "shared_kb": { "type": ["integer", "null"] },
+        "swap_pss_kb": { "type": ["integer", "null"] }
+      }
+    }
+  }
+}

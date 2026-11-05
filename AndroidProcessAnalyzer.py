@@ -450,22 +450,31 @@ def parse_status(status_text: str) -> dict[str, str]:
     return result
 
 
+_LIMIT_ROW = re.compile(r"^(.+?)\s{2,}(\S+)\s{2,}(\S+)(?:\s{2,}(\S+))?$")
+
+
+def _limit_value(text: str) -> int | None:
+    if text == "unlimited":
+        return None
+    return int(text) if text.isdigit() else None
+
+
 def parse_limits(limits_text: str) -> dict[str, dict[str, int | None]]:
-    """Parse /proc/<pid>/limits."""
-    result = {}
+    """Parse /proc/<pid>/limits.
+
+    Limit names contain single spaces ("Max open files"), so columns are split
+    on runs of 2+ spaces. Splitting on whitespace dropped most rows.
+    """
+    result: dict[str, dict[str, int | None]] = {}
     for line in limits_text.split("\n"):
         line = line.strip()
         if not line or line.startswith("Limit"):
             continue
-        parts = line.split()
-        if len(parts) >= 3:
-            limit_name = parts[0]
-            try:
-                soft = int(parts[1]) if parts[1] != "unlimited" else None
-                hard = int(parts[2]) if parts[2] != "unlimited" else None
-                result[limit_name] = {"soft": soft, "hard": hard}
-            except (ValueError, IndexError):
-                pass
+        m = _LIMIT_ROW.match(line)
+        if not m:
+            continue
+        name, soft_s, hard_s = m.group(1), m.group(2), m.group(3)
+        result[name] = {"soft": _limit_value(soft_s), "hard": _limit_value(hard_s)}
     return result
 
 
@@ -520,19 +529,22 @@ def parse_smaps_line(line: str) -> tuple[dict[str, Any] | None, bool]:
     )
 
 
-def parse_smaps(smaps_text: str) -> dict[str, list[dict[str, Any]]]:
-    """Parse /proc/<pid>/smaps. Return dict: inode_key -> [mapping, mapping_dict]."""
-    lines = smaps_text.split("\n")
-    result: dict[str, list[dict[str, Any]]] = {}
+def parse_smaps(smaps_text: str) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """Parse /proc/<pid>/smaps into (mapping, data) pairs, one per mapping.
+
+    Mappings are NOT merged by inode. Anonymous mappings all have inode 0, and
+    segments of one library share an inode; keying by inode silently dropped
+    most of the process's memory (device evidence: 700 kB reported vs 35416 kB).
+    """
+    result: list[tuple[dict[str, Any], dict[str, Any]]] = []
     current_mapping: dict[str, Any] | None = None
     current_data: dict[str, Any] = {}
 
-    for line in lines:
+    for line in smaps_text.split("\n"):
         hdr, is_hdr = parse_smaps_line(line)
         if is_hdr and hdr:
             if current_mapping is not None:
-                key = f"{current_mapping['dev']}:{current_mapping['inode']}"
-                result[key] = [current_mapping, current_data]
+                result.append((current_mapping, current_data))
             current_mapping = hdr
             current_data = {}
         elif current_mapping is not None:
@@ -548,8 +560,7 @@ def parse_smaps(smaps_text: str) -> dict[str, list[dict[str, Any]]]:
                     pass
 
     if current_mapping is not None:
-        key = f"{current_mapping['dev']}:{current_mapping['inode']}"
-        result[key] = [current_mapping, current_data]
+        result.append((current_mapping, current_data))
 
     return result
 
@@ -565,19 +576,23 @@ def parse_maps(maps_text: str) -> list[dict[str, Any]]:
 
 
 def parse_net_unix(net_unix_text: str) -> dict[int, dict[str, str]]:
-    """Parse /proc/net/unix. Return inode -> {proto, state, ...}."""
+    """Parse /proc/net/unix.
+
+    Columns: Num RefCount Protocol Flags Type St Inode Path.
+    Path is optional (anonymous sockets have none).
+    """
     result = {}
     for line in net_unix_text.split("\n")[1:]:
         parts = line.split()
-        if len(parts) >= 6:
+        if len(parts) >= 7:
             try:
-                inode = int(parts[4])
+                inode = int(parts[6])
                 result[inode] = {
                     "protocol": "unix",
-                    "state": parts[3],
-                    "path": parts[6] if len(parts) > 6 else "",
+                    "state": parts[5],
+                    "path": parts[7] if len(parts) > 7 else "",
                 }
-            except (ValueError, IndexError):
+            except ValueError:
                 pass
     return result
 
@@ -600,25 +615,38 @@ def parse_net_tcp_udp(net_text: str, proto: str) -> dict[int, dict[str, str]]:
     return result
 
 
-def parse_mountinfo(mountinfo_text: str) -> list[dict[str, str]]:
-    """Parse /proc/<pid>/mountinfo."""
-    result = []
+def parse_mountinfo(mountinfo_text: str) -> list[dict[str, Any]]:
+    """Parse /proc/<pid>/mountinfo.
+
+    Format: id parent maj:min root mount_point options [optional...] - fstype source super_options.
+    The optional-field list has variable length, so the fs type is found after
+    the "-" separator rather than at a fixed offset from the end.
+    """
+    result: list[dict[str, Any]] = []
     for line in mountinfo_text.split("\n"):
         parts = line.split()
-        if len(parts) >= 10:
-            result.append(
-                {
-                    "mount_id": parts[0],
-                    "parent_id": parts[1],
-                    "dev_major": parts[2].split(":")[0],
-                    "dev_minor": parts[2].split(":")[1] if ":" in parts[2] else "0",
-                    "root": parts[3],
-                    "mount_point": parts[4],
-                    "mount_options": parts[5],
-                    "filesystem_type": parts[-2],
-                    "mount_source": parts[-1],
-                }
-            )
+        if len(parts) < 10 or "-" not in parts[6:]:
+            continue
+        sep = parts.index("-", 6)
+        pre, post = parts[:sep], parts[sep + 1 :]
+        if len(pre) < 6 or len(post) < 2:
+            continue
+        dev_major, _, dev_minor = pre[2].partition(":")
+        result.append(
+            {
+                "mount_id": pre[0],
+                "parent_id": pre[1],
+                "dev_major": dev_major,
+                "dev_minor": dev_minor or "0",
+                "root": pre[3],
+                "mount_point": pre[4],
+                "mount_options": pre[5],
+                "optional_fields": pre[6:],
+                "filesystem_type": post[0],
+                "mount_source": post[1],
+                "super_options": " ".join(post[2:]),
+            }
+        )
     return result
 
 
@@ -643,54 +671,69 @@ def parse_seccomp_status(status_dict: dict[str, str]) -> int | None:
         return None
 
 
+# Linux capability numbers, from include/uapi/linux/capability.h.
+CAPABILITY_NAMES = [
+    "cap_chown",
+    "cap_dac_override",
+    "cap_dac_read_search",
+    "cap_fowner",
+    "cap_fsetid",
+    "cap_kill",
+    "cap_setgid",
+    "cap_setuid",
+    "cap_setpcap",
+    "cap_linux_immutable",
+    "cap_net_bind_service",
+    "cap_net_broadcast",
+    "cap_net_admin",
+    "cap_net_raw",
+    "cap_ipc_lock",
+    "cap_ipc_owner",
+    "cap_sys_module",
+    "cap_sys_rawio",
+    "cap_sys_chroot",
+    "cap_sys_ptrace",
+    "cap_sys_pacct",
+    "cap_sys_admin",
+    "cap_sys_boot",
+    "cap_sys_nice",
+    "cap_sys_resource",
+    "cap_sys_time",
+    "cap_sys_tty_config",
+    "cap_mknod",
+    "cap_lease",
+    "cap_audit_write",
+    "cap_audit_control",
+    "cap_setfcap",
+    "cap_mac_override",
+    "cap_mac_admin",
+    "cap_syslog",
+    "cap_wake_alarm",
+    "cap_block_suspend",
+    "cap_audit_read",
+    "cap_perfmon",
+    "cap_bpf",
+    "cap_checkpoint_restore",
+]
+
+
 def parse_capabilities(cap_str: str) -> list[str]:
-    """Decode a capability mask (hex string). Return list of cap names."""
+    """Decode a capability bitmask (hex string) into capability names.
+
+    Bits beyond the known table are reported as cap_unknown_<n>, not dropped.
+    """
     try:
         val = int(cap_str, 16)
-        caps = []
-        cap_names = {
-            0: "cap_chown",
-            1: "cap_dac_override",
-            2: "cap_dac_read_search",
-            3: "cap_fowner",
-            4: "cap_fsetid",
-            5: "cap_kill",
-            6: "cap_setgid",
-            7: "cap_setuid",
-            8: "cap_setfcap",
-            9: "cap_setpcap",
-            10: "cap_net_raw",
-            11: "cap_sys_chroot",
-            12: "cap_sys_ptrace",
-            13: "cap_sys_pacct",
-            14: "cap_sys_admin",
-            15: "cap_sys_boot",
-            16: "cap_sys_nice",
-            17: "cap_sys_resource",
-            18: "cap_sys_time",
-            19: "cap_sys_tty_config",
-            20: "cap_mknod",
-            21: "cap_lease",
-            22: "cap_audit_write",
-            23: "cap_audit_control",
-            24: "cap_setfattr",
-            25: "cap_mac_override",
-            26: "cap_mac_admin",
-            27: "cap_syslog",
-            28: "cap_wake_alarm",
-            29: "cap_block_suspend",
-            30: "cap_audit_read",
-            31: "cap_perfmon",
-            32: "cap_bpf",
-            33: "cap_checkpoint_restore",
-        }
-        for i in range(34):
-            if val & (1 << i):
-                if i in cap_names:
-                    caps.append(cap_names[i])
-        return caps
     except ValueError:
         return []
+    caps = []
+    for bit in range(val.bit_length()):
+        if val & (1 << bit):
+            if bit < len(CAPABILITY_NAMES):
+                caps.append(CAPABILITY_NAMES[bit])
+            else:
+                caps.append(f"cap_unknown_{bit}")
+    return caps
 
 
 def parse_dumpsys_meminfo(meminfo_text: str) -> tuple[dict[str, int], str]:
@@ -804,6 +847,34 @@ class Collector:
         raise NotImplementedError
 
 
+def _optional_shell(ctx: Context, command: str) -> str | None:
+    """Run a shell command whose failure must not sink the whole section.
+
+    adb shell raises RuntimeError on nonzero exit. For example,
+    `readlink /proc/<pid>/exe` exits 1 for a non-root caller, which made the
+    identity section fail entirely on device.
+    """
+    try:
+        return ctx.adb_client.shell(command)
+    except RuntimeError:
+        return None
+
+
+def _parse_int(text: str | None) -> int | None:
+    if text is None:
+        return None
+    try:
+        return int(text.strip())
+    except ValueError:
+        return None
+
+
+def _opt_sum(values: list[int | None]) -> int | None:
+    """Sum values, ignoring None. Return None only if every value is None."""
+    present = [v for v in values if v is not None]
+    return sum(present) if present else None
+
+
 class IdentityCollector(Collector):
     name = "identity"
 
@@ -811,18 +882,21 @@ class IdentityCollector(Collector):
         try:
             stat = ctx.adb_client.shell(f"cat /proc/{ctx.pid}/stat")
             status = ctx.adb_client.shell(f"cat /proc/{ctx.pid}/status")
-            cmdline_raw = ctx.adb_client.shell(f"cat /proc/{ctx.pid}/cmdline")
-            exe_link = ctx.adb_client.shell(f"readlink /proc/{ctx.pid}/exe")
-            cwd_link = ctx.adb_client.shell(f"readlink /proc/{ctx.pid}/cwd")
+            cmdline_raw = _optional_shell(ctx, f"cat /proc/{ctx.pid}/cmdline") or ""
+            exe_link = _optional_shell(ctx, f"readlink /proc/{ctx.pid}/exe") or ""
+            cwd_link = _optional_shell(ctx, f"readlink /proc/{ctx.pid}/cwd") or ""
 
             stat_dict = parse_stat(stat)
             status_dict = parse_status(status)
+
+            # cmdline is NUL-separated argv; show it as a single space-separated line.
+            cmdline = cmdline_raw.replace("\x00", " ").strip() or None
 
             identity = ProcessIdentity(
                 pid=ctx.pid,
                 ppid=int(stat_dict.get("ppid", 0)),
                 name=stat_dict.get("comm", ""),
-                cmdline=cmdline_raw.strip() or None,
+                cmdline=cmdline,
                 exe=exe_link.strip() or None,
                 cwd=cwd_link.strip() or None,
                 uid=int(status_dict.get("Uid", "0 0 0 0").split()[0]),
@@ -846,7 +920,7 @@ class IdentityCollector(Collector):
                         component="identity",
                         error=str(e),
                         impact="cannot determine process identity",
-                        required_access="read /proc/<pid>/stat, status, exe, cwd",
+                        required_access="read /proc/<pid>/stat, status",
                     )
                 ],
             )
@@ -858,71 +932,100 @@ class MemoryCollector(Collector):
     def collect(self, ctx: Context) -> SectionResult:
         try:
             smaps = ctx.adb_client.shell(f"cat /proc/{ctx.pid}/smaps")
+            mappings = parse_smaps(smaps)
 
-            smaps_dict = parse_smaps(smaps)
+            # Totals sum every mapping. Artifacts group mappings that belong
+            # together: file mappings by dev:inode, anonymous ones by name.
+            totals = {"pss": 0, "rss": 0, "uss": 0, "virtual": 0, "swap_pss": 0}
+            groups: dict[str, dict[str, Any]] = {}
 
-            artifacts: list[Artifact] = []
-            total_pss = 0
-            total_rss = 0
-            total_uss = 0
-            total_virtual = 0
-
-            for inode_key, (mapping, data) in smaps_dict.items():
-                pss = data.get("Pss", None)
-                if pss is not None:
-                    total_pss += pss
-
-                rss = data.get("Rss", None)
-                if rss is not None:
-                    total_rss += rss
-
-                private_clean = data.get("Private_Clean", 0) or 0
-                private_dirty = data.get("Private_Dirty", 0) or 0
-                uss = private_clean + private_dirty
-
-                shared_clean = data.get("Shared_Clean", 0) or 0
-                shared_dirty = data.get("Shared_Dirty", 0) or 0
-                shared = shared_clean + shared_dirty
-
-                total_uss += uss
-
-                size = data.get("Size", None)
-                if size is not None:
-                    total_virtual += size
-
-                artifact = Artifact(
-                    key=inode_key,
-                    name=mapping.get("pathname", f"[inode {mapping['inode']}]"),
-                    path=mapping.get("pathname") or None,
-                    other_paths=[],
-                    artifact_class="other",
-                    memory=MemoryBlock(
-                        virtual_kb=size,
-                        rss_kb=rss,
-                        pss_kb=pss,
-                        uss_kb=uss if uss > 0 else None,
-                        shared_kb=shared if shared > 0 else None,
-                        swap_pss_kb=data.get("SwapPss"),
-                    ),
-                    pss_percent_of_process=(
-                        (pss / total_pss * 100) if total_pss > 0 and pss else None
-                    ),
-                    by_segment={},
-                    sharing={"process_count": 1, "is_lower_bound": False},
-                    dependency={},
-                    flags=[],
+            for mapping, data in mappings:
+                pss = data.get("Pss")
+                rss = data.get("Rss")
+                size = data.get("Size")
+                swap_pss = data.get("SwapPss")
+                uss = (data.get("Private_Clean", 0) or 0) + (
+                    data.get("Private_Dirty", 0) or 0
                 )
-                artifacts.append(artifact)
+                shared = (data.get("Shared_Clean", 0) or 0) + (
+                    data.get("Shared_Dirty", 0) or 0
+                )
+
+                totals["pss"] += pss or 0
+                totals["rss"] += rss or 0
+                totals["uss"] += uss
+                totals["virtual"] += size or 0
+                totals["swap_pss"] += swap_pss or 0
+
+                pathname = mapping["pathname"]
+                if mapping["inode"] == 0:
+                    key = f"anon:{pathname}"
+                    name = pathname or "[anon]"
+                else:
+                    key = f"{mapping['dev']}:{mapping['inode']}"
+                    name = pathname or f"[inode {mapping['inode']}]"
+
+                group = groups.setdefault(
+                    key,
+                    {
+                        "name": name,
+                        "path": pathname or None,
+                        "pss": [],
+                        "rss": [],
+                        "virtual": [],
+                        "swap_pss": [],
+                        "uss": 0,
+                        "shared": 0,
+                    },
+                )
+                group["pss"].append(pss)
+                group["rss"].append(rss)
+                group["virtual"].append(size)
+                group["swap_pss"].append(swap_pss)
+                group["uss"] += uss
+                group["shared"] += shared
+
+            total_pss = totals["pss"]
+            artifacts: list[Artifact] = []
+            for key, group in groups.items():
+                pss_group = _opt_sum(group["pss"])
+                artifacts.append(
+                    Artifact(
+                        key=key,
+                        name=group["name"],
+                        path=group["path"],
+                        other_paths=[],
+                        artifact_class="other",
+                        memory=MemoryBlock(
+                            virtual_kb=_opt_sum(group["virtual"]),
+                            rss_kb=_opt_sum(group["rss"]),
+                            pss_kb=pss_group,
+                            uss_kb=group["uss"] or None,
+                            shared_kb=group["shared"] or None,
+                            swap_pss_kb=_opt_sum(group["swap_pss"]),
+                        ),
+                        # Computed against the final total, not a running one.
+                        pss_percent_of_process=(
+                            (pss_group / total_pss * 100)
+                            if pss_group and total_pss > 0
+                            else None
+                        ),
+                        by_segment={},
+                        sharing={"process_count": 1, "is_lower_bound": False},
+                        dependency={},
+                        flags=[],
+                    )
+                )
 
             artifacts.sort(key=lambda a: a.memory.pss_kb or 0, reverse=True)
 
             memory_section = MemorySection(
                 totals=MemorySummary(
-                    pss_kb=total_pss if total_pss > 0 else None,
-                    rss_kb=total_rss if total_rss > 0 else None,
-                    uss_kb=total_uss if total_uss > 0 else None,
-                    virtual_kb=total_virtual if total_virtual > 0 else None,
-                    swap_pss_kb=None,
+                    pss_kb=totals["pss"] or None,
+                    rss_kb=totals["rss"] or None,
+                    uss_kb=totals["uss"] or None,
+                    virtual_kb=totals["virtual"] or None,
+                    swap_pss_kb=totals["swap_pss"] or None,
                     by_backing={
                         "file_pss_kb": None,
                         "anonymous_pss_kb": None,
@@ -1174,13 +1277,16 @@ class LimitsOomCollector(Collector):
     def collect(self, ctx: Context) -> SectionResult:
         try:
             limits_text = ctx.adb_client.shell(f"cat /proc/{ctx.pid}/limits")
-            status = ctx.adb_client.shell(f"cat /proc/{ctx.pid}/status")
-
             limits_dict = parse_limits(limits_text)
-            status_dict = parse_status(status)
 
-            oom_score = status_dict.get("VmPeak")
-            oom_score_adj = status_dict.get("VmHWM")
+            # OOM values live in their own files. The old code read VmPeak and
+            # VmHWM (memory counters) instead. Device: oom_score=0, adj=-1000.
+            oom_score = _parse_int(
+                _optional_shell(ctx, f"cat /proc/{ctx.pid}/oom_score")
+            )
+            oom_score_adj = _parse_int(
+                _optional_shell(ctx, f"cat /proc/{ctx.pid}/oom_score_adj")
+            )
 
             return SectionResult(
                 status="complete",
@@ -1198,7 +1304,7 @@ class LimitsOomCollector(Collector):
                         component="limits_and_oom",
                         error=str(e),
                         impact="cannot profile limits/OOM",
-                        required_access="read /proc/<pid>/limits, status",
+                        required_access="read /proc/<pid>/limits, oom_score",
                     )
                 ],
             )
@@ -1212,7 +1318,12 @@ class SecurityCollector(Collector):
             status = ctx.adb_client.shell(f"cat /proc/{ctx.pid}/status")
             status_dict = parse_status(status)
 
-            selinux = status_dict.get("Label", None)
+            # The SELinux label is in attr/current; status has no "Label" field.
+            selinux = (
+                (_optional_shell(ctx, f"cat /proc/{ctx.pid}/attr/current") or "")
+                .replace("\x00", "")
+                .strip()
+            ) or None
             cap_eff = status_dict.get("CapEff", "0")
             cap_prm = status_dict.get("CapPrm", "0")
             cap_bnd = status_dict.get("CapBnd", "0")
@@ -1237,7 +1348,7 @@ class SecurityCollector(Collector):
                         component="security",
                         error=str(e),
                         impact="cannot profile security",
-                        required_access="read /proc/<pid>/status",
+                        required_access="read /proc/<pid>/status, attr/current",
                     )
                 ],
             )
@@ -1479,21 +1590,35 @@ class Orchestrator:
 
 
 def render_text(report: dict[str, Any]) -> str:
-    """Render report dict as ASCII text output."""
-    lines = []
+    """Render the JSON report dict as plain text.
 
-    sections_result = report.get("sections", {})
-    identity = sections_result.get("identity", SectionResult(status="unavailable")).data
+    Reads only the report dict, the same object written as JSON, so text and
+    JSON output cannot disagree. The old version referenced an undefined name
+    under --format text and read keys the report does not contain.
+    """
+    lines: list[str] = []
 
+    identity = report.get("identity") or {}
     if identity:
-        lines.append(f"PID: {identity.pid}")
-        lines.append(f"Name: {identity.name}")
+        lines.append(f"PID: {identity.get('pid')}")
+        lines.append(f"Name: {identity.get('name')}")
+        lines.append(f"Exe: {identity.get('exe')}")
+        lines.append(f"Uid: {identity.get('uid')}")
 
-    memory_result = sections_result.get("memory", SectionResult(status="unavailable"))
-    if memory_result.data:
-        memory = memory_result.data
-        if memory.totals.pss_kb:
-            lines.append(f"Memory PSS: {memory.totals.pss_kb} kB")
+    totals = (report.get("memory") or {}).get("totals") or {}
+    for label, key in (("PSS", "pss_kb"), ("RSS", "rss_kb"), ("USS", "uss_kb")):
+        if totals.get(key) is not None:
+            lines.append(f"Memory {label}: {totals[key]} kB")
+
+    security = report.get("security") or {}
+    if security.get("selinux_context"):
+        lines.append(f"SELinux: {security['selinux_context']}")
+
+    limits = report.get("limits_and_oom") or {}
+    if limits.get("oom_score") is not None:
+        lines.append(
+            f"OOM score: {limits['oom_score']} (adj {limits.get('oom_score_adj')})"
+        )
 
     return "\n".join(lines)
 
@@ -1503,25 +1628,83 @@ def render_text(report: dict[str, Any]) -> str:
 # ============================================================================
 
 
+def _report_pss_kb(report: dict[str, Any]) -> int | None:
+    return ((report.get("memory") or {}).get("totals") or {}).get("pss_kb")
+
+
 def diff_reports(report1: dict[str, Any], report2: dict[str, Any]) -> str:
-    """Compare two reports and return a diff-shaped text report."""
-    lines = ["Diff Report"]
-    lines.append("============")
+    """Compare two JSON reports (as written by `analyze --format json`)."""
+    lines = ["Diff Report", "============"]
 
-    memory1 = report1.get("sections", {}).get("memory", {}).get("data")
-    memory2 = report2.get("sections", {}).get("memory", {}).get("data")
-
-    if memory1 and memory2:
-        pss1 = 0
-        pss2 = 0
-        if isinstance(memory1, dict) and "totals" in memory1:
-            pss1 = memory1["totals"].get("pss_kb", 0) or 0
-        if isinstance(memory2, dict) and "totals" in memory2:
-            pss2 = memory2["totals"].get("pss_kb", 0) or 0
-        if pss1 or pss2:
-            lines.append(f"Memory PSS delta: {pss2 - pss1} kB")
+    pss1 = _report_pss_kb(report1)
+    pss2 = _report_pss_kb(report2)
+    if pss1 is None or pss2 is None:
+        lines.append("Memory PSS: unavailable in one or both reports")
+    else:
+        lines.append(f"Memory PSS: {pss1} -> {pss2} kB")
+        lines.append(f"Memory PSS delta: {pss2 - pss1} kB")
 
     return "\n".join(lines)
+
+
+def _to_jsonable(obj: Any) -> Any:
+    """Recursively turn dataclasses, dicts, lists and sets into JSON-native values."""
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return {f.name: _to_jsonable(getattr(obj, f.name)) for f in dataclasses.fields(obj)}
+    if isinstance(obj, dict):
+        return {k: _to_jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        return [_to_jsonable(v) for v in obj]
+    return obj
+
+
+def build_report(result: dict[str, Any]) -> dict[str, Any]:
+    """Assemble the JSON report from collector results.
+
+    Built once and shared by the JSON and text renderers.
+    """
+    output_json: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
+        "report": {
+            "status": "complete",
+            "tool_version": VERSION,
+            "generated_at_utc": datetime.datetime.now(
+                datetime.timezone.utc
+            ).isoformat(),
+            "duration_ms": 0,
+        },
+        "process": None,
+        "summary": None,
+        "sections_status": {},
+        "memory": None,
+        "dependencies": None,
+        "threads": None,
+        "file_descriptors": None,
+        "cpu": None,
+        "io": None,
+        "limits_and_oom": None,
+        "security": None,
+        "cgroups_namespaces": None,
+        "binder": None,
+        "network": None,
+        "android_meminfo": None,
+        "environment": None,
+        "checks": [],
+        "notes": [],
+        "limitations": [],
+        "errors": [dataclasses.asdict(e) for e in result["errors"]],
+        "glossary": {},
+    }
+
+    for section_name, section_result in result["sections"].items():
+        assert isinstance(section_name, str)
+        output_json["sections_status"][section_name] = {
+            "status": section_result.status,
+        }
+        if section_result.data is not None:
+            output_json[section_name] = _to_jsonable(section_result.data)
+
+    return output_json
 
 
 # ============================================================================
@@ -1662,55 +1845,9 @@ def main() -> int:
     orchestrator = Orchestrator(ctx)
     result: dict[str, Any] = orchestrator.collect_all()
 
+    output_json = build_report(result)
+
     if args.format in ["json", "both"]:
-        output_json: dict[str, Any] = {
-            "schema_version": SCHEMA_VERSION,
-            "report": {
-                "status": "complete",
-                "tool_version": VERSION,
-                "generated_at_utc": datetime.datetime.now(
-                    datetime.timezone.utc
-                ).isoformat(),
-                "duration_ms": 0,
-            },
-            "process": None,
-            "summary": None,
-            "sections_status": {},
-            "memory": None,
-            "dependencies": None,
-            "threads": None,
-            "file_descriptors": None,
-            "cpu": None,
-            "io": None,
-            "limits_and_oom": None,
-            "security": None,
-            "cgroups_namespaces": None,
-            "binder": None,
-            "network": None,
-            "android_meminfo": None,
-            "environment": None,
-            "checks": [],
-            "notes": [],
-            "limitations": [],
-            "errors": [
-                dataclasses.asdict(e) for e in result["errors"]
-            ],
-            "glossary": {},
-        }
-
-        for section_name, section_result in result["sections"].items():
-            assert isinstance(section_name, str)
-            output_json["sections_status"][section_name] = {
-                "status": section_result.status,
-            }
-            if section_result.data is not None:
-                if isinstance(section_result.data, (dict, list)):
-                    output_json[section_name] = section_result.data
-                else:
-                    output_json[section_name] = dataclasses.asdict(
-                        section_result.data
-                    )
-
         json_str = json.dumps(output_json, indent=2, default=str)
         if args.output:
             with tempfile.NamedTemporaryFile(
@@ -1730,6 +1867,7 @@ def main() -> int:
         print(text_output)
 
     return 0
+
 
 
 if __name__ == "__main__":

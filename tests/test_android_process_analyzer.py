@@ -43,8 +43,10 @@ Private_Clean:         0 kB
 Private_Dirty:         2 kB
 """
         result = parse_smaps(smaps_text)
-        assert "(8, 0):1234" in result
-        assert result["(8, 0):1234"][0]["pathname"] == "/path with spaces/file.so"
+        mapping, _ = result[0]
+        assert mapping["dev"] == (8, 0)
+        assert mapping["inode"] == 1234
+        assert mapping["pathname"] == "/path with spaces/file.so"
 
     def test_smaps_with_deleted_marker(self) -> None:
         """Paths with (deleted) marker should parse."""
@@ -55,7 +57,7 @@ Pss:                   2 kB
 """
         result = parse_smaps(smaps_text)
         assert len(result) == 1
-        mapping, data = list(result.values())[0]
+        mapping, data = result[0]
         assert mapping["is_deleted"] is True
 
     def test_smaps_missing_pss_field_is_null(self) -> None:
@@ -66,7 +68,7 @@ Rss:                   4 kB
 Pss:                   2 kB
 """
         result = parse_smaps(smaps_text)
-        mapping, data = list(result.values())[0]
+        mapping, data = result[0]
         assert data.get("Pss_Anon") is None
 
     def test_smaps_anon_mapping(self) -> None:
@@ -77,7 +79,7 @@ Rss:                   4 kB
 Pss:                   4 kB
 """
         result = parse_smaps(smaps_text)
-        assert "(0, 0):0" in result
+        assert result[0][0]["inode"] == 0
 
     def test_smaps_named_anon(self) -> None:
         """Named anonymous mappings like [anon:xxx]."""
@@ -87,8 +89,7 @@ Rss:                   4 kB
 Pss:                   4 kB
 """
         result = parse_smaps(smaps_text)
-        assert "(0, 0):0" in result
-        mapping, _ = result["(0, 0):0"]
+        mapping, _ = result[0]
         assert "[anon:libc_malloc]" in mapping["pathname"]
 
     def test_smaps_multiple_mappings(self) -> None:
@@ -103,9 +104,9 @@ Rss:                   4 kB
 Pss:                   2 kB
 """
         result = parse_smaps(smaps_text)
-        assert "(8, 0):1234" in result
-        # Two entries for the same inode
-        assert len(result["(8, 0):1234"]) == 2
+        # Both segments are kept; parse_smaps does not merge by inode
+        assert len(result) == 2
+        assert all(m["inode"] == 1234 for m, _ in result)
 
 
 class TestStatParsing:
@@ -323,13 +324,12 @@ class TestNetParsing:
 
     def test_net_unix_parsing(self) -> None:
         """Unix socket parsing."""
-        # Our parse_net_unix expects: parts[4] for inode, parts[3] for state, parts[6] for path
         unix_text = """Num RefCount Protocol Flags Type St Inode Path
-0: 00000003 00000002 00000000 0001 01 123456 456789 /tmp/socket
+ffff8800: 00000002 00000000 00010000 0001 01 123456 /tmp/socket
 """
         result = parse_net_unix(unix_text)
-        # Based on implementation, should extract index 4 as inode
-        assert len(result) >= 0
+        assert result[123456]["state"] == "01"
+        assert result[123456]["path"] == "/tmp/socket"
 
     def test_net_tcp_parsing(self) -> None:
         """TCP socket parsing."""
@@ -517,28 +517,12 @@ class TestDiff:
 
     def test_diff_basic(self) -> None:
         """Diff should compare two reports."""
-        report1 = {
-            "sections": {
-                "memory": {
-                    "data": {
-                        "totals": {"pss_kb": 1000},
-                    }
-                }
-            }
-        }
-        report2 = {
-            "sections": {
-                "memory": {
-                    "data": {
-                        "totals": {"pss_kb": 1100},
-                    }
-                }
-            }
-        }
+        report1 = {"memory": {"totals": {"pss_kb": 1000}}}
+        report2 = {"memory": {"totals": {"pss_kb": 1100}}}
         from AndroidProcessAnalyzer import diff_reports
 
         result = diff_reports(report1, report2)
-        assert "delta" in result or "Diff" in result
+        assert "Memory PSS delta: 100 kB" in result
 
 
 class TestThreadStateParsing:
@@ -583,3 +567,157 @@ class TestSectionFiltering:
         assert "binder" in OPT_IN_SECTIONS
         assert "network" in OPT_IN_SECTIONS
         assert "environment" in OPT_IN_SECTIONS
+
+
+class TestDeviceEvidenceRegressions:
+    """Regression tests for bugs confirmed on audiohalservice.qti (PID 1547)."""
+
+    def test_smaps_anon_mappings_not_merged(self) -> None:
+        """Anonymous mappings (inode 0) must not overwrite each other."""
+        from AndroidProcessAnalyzer import parse_smaps
+
+        smaps_text = """7f00000000-7f00001000 rw-p 00000000 00:00 0
+Size:                  4 kB
+Rss:                   4 kB
+Pss:                   4 kB
+7f00002000-7f00003000 rw-p 00000000 00:00 0
+Size:                  4 kB
+Rss:                   4 kB
+Pss:                   4 kB
+"""
+        assert len(parse_smaps(smaps_text)) == 2
+
+    def test_memory_totals_sum_every_mapping(self) -> None:
+        """Totals must include all mappings; artifacts group per file."""
+        from types import SimpleNamespace
+
+        from AndroidProcessAnalyzer import MemoryCollector
+
+        smaps = """7f00000000-7f00001000 rw-p 00000000 00:00 0
+Size:                  4 kB
+Rss:                   10 kB
+Pss:                   5 kB
+Private_Dirty:         10 kB
+7f00002000-7f00003000 rw-p 00000000 00:00 0
+Size:                  4 kB
+Rss:                   20 kB
+Pss:                   7 kB
+Private_Dirty:         20 kB
+7f00010000-7f00011000 r--p 00000000 08:00 1234 /vendor/lib64/libx.so
+Size:                  4 kB
+Rss:                   8 kB
+Pss:                   3 kB
+Private_Clean:         8 kB
+"""
+
+        class FakeAdb:
+            def shell(self, script: str) -> str:
+                assert script == "cat /proc/1547/smaps"
+                return smaps
+
+        ctx = SimpleNamespace(pid=1547, adb_client=FakeAdb())
+        section = MemoryCollector().collect(ctx)  # type: ignore[arg-type]
+        assert section.status == "complete"
+        assert section.data.totals.rss_kb == 38
+        assert section.data.totals.pss_kb == 15
+        assert section.data.totals.uss_kb == 38
+        # Anonymous mappings group into one artifact (pss 5 + 7 = 12).
+        top = section.data.artifacts[0]
+        assert top.memory.pss_kb == 12
+        assert abs(top.pss_percent_of_process - 80.0) < 1e-9
+
+    def test_limits_keep_multiword_names(self) -> None:
+        """Limit names with spaces must not be dropped."""
+        from AndroidProcessAnalyzer import parse_limits
+
+        text = (
+            "Limit                     Soft Limit           Hard Limit           Units     \n"
+            "Max open files            1024                 2048                 files     \n"
+            "Max cpu time              unlimited            unlimited            seconds   \n"
+        )
+        result = parse_limits(text)
+        assert result["Max open files"] == {"soft": 1024, "hard": 2048}
+        assert result["Max cpu time"] == {"soft": None, "hard": None}
+
+    def test_capabilities_match_device_evidence(self) -> None:
+        """CapEff 0x0000001000800000 is bits 23 and 36 on the device."""
+        from AndroidProcessAnalyzer import parse_capabilities
+
+        assert parse_capabilities("0000001000800000") == [
+            "cap_sys_nice",
+            "cap_block_suspend",
+        ]
+
+    def test_mountinfo_optional_fields(self) -> None:
+        """Variable optional fields must not shift the fs type."""
+        from AndroidProcessAnalyzer import parse_mountinfo
+
+        text = "22 2 8:4 / /home rw shared:1 master:2 - ext4 /dev/sda4 rw,noatime"
+        result = parse_mountinfo(text)
+        assert result[0]["filesystem_type"] == "ext4"
+        assert result[0]["mount_source"] == "/dev/sda4"
+        assert result[0]["optional_fields"] == ["shared:1", "master:2"]
+
+    def test_render_text_reads_json_report(self) -> None:
+        """Text rendering works from the JSON report dict (old code raised NameError)."""
+        from AndroidProcessAnalyzer import render_text
+
+        report = {
+            "identity": {
+                "pid": 1547,
+                "name": "audiohalservice",
+                "exe": "/vendor/bin/hw/audiohalservice.qti",
+                "uid": 1041,
+            },
+            "memory": {"totals": {"pss_kb": 25307, "rss_kb": 35416, "uss_kb": 24436}},
+            "security": {"selinux_context": "u:r:hal_audio_default:s0"},
+            "limits_and_oom": {"oom_score": 0, "oom_score_adj": -1000},
+        }
+        text = render_text(report)
+        assert "PID: 1547" in text
+        assert "Memory PSS: 25307 kB" in text
+        assert "SELinux: u:r:hal_audio_default:s0" in text
+        assert "OOM score: 0 (adj -1000)" in text
+
+
+class TestSelinuxOutput:
+    def test_selinux_label_strips_nul_and_whitespace(self) -> None:
+        """attr/current from adb carries a trailing NUL (device evidence)."""
+        from types import SimpleNamespace
+
+        from AndroidProcessAnalyzer import SecurityCollector
+
+        class FakeAdb:
+            def shell(self, script: str) -> str:
+                if script.endswith("attr/current"):
+                    return "u:r:hal_audio_default:s0\x00"
+                return (
+                    "CapEff:\t0000000000000000\n"
+                    "CapPrm:\t0000000000000000\n"
+                    "CapBnd:\t0000000000000000\n"
+                )
+
+        ctx = SimpleNamespace(pid=1547, adb_client=FakeAdb())
+        section = SecurityCollector().collect(ctx)  # type: ignore[arg-type]
+        assert section.data["selinux_context"] == "u:r:hal_audio_default:s0"
+
+
+class TestJsonNativeReport:
+    def test_nested_dataclasses_become_objects(self) -> None:
+        """Thread and fd entries must serialize as objects, not repr() strings."""
+        import json
+
+        from AndroidProcessAnalyzer import FdInfo, SectionResult, _to_jsonable
+
+        fd = FdInfo(fd=0, fd_type="unknown", path="/dev/null", flags=[], position=None, size=None)
+        section = SectionResult(status="complete", data={"fds": [fd], "truncated": False})
+        converted = _to_jsonable(section.data)
+        assert converted["fds"][0] == {
+            "fd": 0,
+            "fd_type": "unknown",
+            "path": "/dev/null",
+            "flags": [],
+            "position": None,
+            "size": None,
+        }
+        assert "FdInfo(" not in json.dumps(converted)
