@@ -240,7 +240,10 @@ class TestLimitsParsing:
 
     def test_limits_parsing(self) -> None:
         """Limits file should parse correctly."""
-        limits_text = "Max cpu time              unlimited            unlimited            seconds\n"
+        limits_text = (
+            "Max cpu time              unlimited            "
+            "unlimited            seconds\n"
+        )
         result = parse_limits(limits_text)
         # The parser extracts the first word as the limit name
         assert isinstance(result, dict)
