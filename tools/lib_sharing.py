@@ -13,10 +13,10 @@ a userdebug device (adb root). Without root, only processes the shell user can
 read are listed.
 
 If session_dir is given, the result is also written to
-<session_dir>/<libname>_sharing.json.
+<session_dir>/<libname>_sharing.csv, one row per process mapping the library.
 """
 
-import json
+import csv
 import pathlib
 import re
 import shlex
@@ -82,8 +82,18 @@ def main() -> int:
             print(f"  {entry['pid']:>6}  {entry['name']}")
 
     if session_dir is not None:
-        out_file = session_dir / f"{base}_sharing.json"
-        out_file.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        out_file = session_dir / f"{base}_sharing.csv"
+        with out_file.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=["library", "path", "pid", "process_name"])
+            writer.writeheader()
+            for path, entries in result["paths"].items():
+                for entry in entries:
+                    writer.writerow({
+                        "library": base,
+                        "path": path,
+                        "pid": entry["pid"],
+                        "process_name": entry["name"],
+                    })
         print(f"wrote {out_file}")
     return 0
 

@@ -172,10 +172,14 @@ It lists each path the library is mapped from, with the processes that map it. R
 To rank a captured process's libraries by memory, in descending order:
 
 ```bash
-python -I tools/lib_memory_rank.py output/<session_id> --sort pss --top 20   # or --sort rss; --json writes the ranking
+python -I tools/lib_memory_rank.py output/<session_id> --sort pss --top 20   # or --sort rss
 ```
 
-It reads the session's `smaps` file, with no device needed. The output also prints the process totals, which should match the report's memory totals.
+It reads the session's `smaps` file, with no device needed. It writes `output/<session_id>/<pid>_lib_memory_rank.csv`, one row per library, and prints the same table with the process totals, which should match the report's memory totals.
+
+### Tabular output
+
+Tabular results are written as CSV, which opens directly in a spreadsheet and works with `cut` and `sort`. The sharing tool writes `<libname>_sharing.csv` when given a session folder. Nested results, such as the dependency tree, stay in JSON.
 
 Limits:
 - A `dlopen` is recorded only as a hint. The file name may be built at run time, or the loader may be a library the tool can't see, so a root can show "no hint".
