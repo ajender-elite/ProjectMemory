@@ -32,8 +32,8 @@ Every function must have type hints. We use `mypy --strict`.
 
 ```python
 # ✅ Good
-def parse_smaps(smaps_text: str) -> dict[str, list[dict[str, Any]]]:
-    """Parse /proc/<pid>/smaps. Return dict: inode_key -> [mapping, mapping_dict]."""
+def parse_smaps(smaps_text: str) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """Parse /proc/<pid>/smaps into one (mapping, data) pair per mapping."""
     ...
 
 # ❌ Bad
@@ -193,7 +193,8 @@ Size:                  4 kB
 Pss:                   2 kB
 """
     result = parse_smaps(smaps_text)
-    assert result["..."]["pathname"] == "/path with spaces/file.so"
+    mapping, _ = result[0]
+    assert mapping["pathname"] == "/path with spaces/file.so"
 
 # ❌ Bad: mock the parser (defeats the purpose)
 def test_smaps(self) -> None:
@@ -321,25 +322,44 @@ python -m pytest --pdb tests/test_android_process_analyzer.py
 python -m pytest -s tests/test_android_process_analyzer.py
 ```
 
-### Test Against Real adb
+### Test Against a Real Device
 
-Once you have a device:
+Use the evidence workflow in the README. It checks the analyzer's output against the raw files it read:
 
 ```bash
-# Connect device
 adb devices
+python -I tools/capture_evidence.py <serial> <pid> output
+python -I tools/replay_report.py output/<session_id>
+python -I tools/build_verbose.py output/<session_id>
+python -I tools/verify.py output/<session_id>
+```
 
-# Run the tool
-python AndroidProcessAnalyzer.py analyze --pid 1234 --format text
+For quick spot checks, compare raw files directly:
 
-# Compare with raw data
+```bash
 adb shell cat /proc/1234/smaps | head -20
 ```
 
-If output differs, check:
+If verification fails, check:
 - Field indices in parsers (Android version variations)
 - Newline normalization (CRLF vs LF)
 - Unicode encoding (non-ASCII in paths)
+- Permissions: `smaps`, `fd`, `io`, and binder logs need root (`adb root` on `userdebug`)
+
+### Changing the Report Schema
+
+`schemas/analyzer-report.schema.json` is generated. Do not edit it by hand.
+
+1. Change the section definitions in `tools/gen_schema.py`.
+2. Regenerate: `python -I tools/gen_schema.py schemas/analyzer-report.schema.json`
+3. Replay an existing session (`tools/replay_report.py output/<session_id>`) and run `tools/verify.py output/<session_id>`. The dump must validate.
+4. If you change `build_report`, update `schemas/analyzer-verbose.schema.json` as well. It is hand-maintained.
+
+Schema changes follow the rule in the FAQ: add fields, don't remove them.
+
+### Evidence Bundles
+
+`output/` contains raw device data and is git-ignored. Never commit it, and don't paste its contents into issues or PRs. Scripts that read captured or downloaded content should run with `python -I`, which ignores the current directory and `PYTHONPATH`.
 
 ### Profile Performance
 
@@ -397,7 +417,7 @@ But first ask: can I fix the type instead of ignoring?
 
 Target metrics (no real adb, fixtures only):
 
-- **Test suite**: < 1 second (currently 0.07s)
+- **Test suite**: < 1 second (currently about 0.3s for 54 tests)
 - **Type check**: < 10 seconds (currently < 5s)
 - **Linting**: < 5 seconds (currently < 1s)
 - **Single parse**: < 1ms (e.g., smaps with 1000 mappings)

@@ -5,5 +5,5 @@ __pycache__/
 .pytest_cache/
 *.pyc
 
-# Generated analyzer output bundles (raw device evidence)
-output_*/
+# Device capture output: raw device evidence and dumps
+output/
