@@ -20,7 +20,7 @@ Dependents:   libraries that list <libname> in DT_NEEDED (direct and transitive)
               scan of the whole device.
 
 Files pulled from the device are cached under <session_dir>/libs/. Output goes to
-<session_dir>/<libname>_deps.json.
+<session_dir>/<device path with / replaced by _>_deps.json, so copies of one name from /system and /vendor get separate files.
 
 Name resolution uses the search path below, not full linker namespace rules.
 Names that cannot be found are listed under "unresolved".
@@ -217,7 +217,7 @@ def main() -> int:
             "runtime_hints are file-name matches in mapped binaries. A name built at run time will not match.",
         ],
     }
-    out = session_dir / f"{target_name}_deps.json"
+    out = session_dir / f"{target_path.lstrip('/').replace('/', '_')}_deps.json"
     out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
     print(target_path)

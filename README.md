@@ -159,7 +159,7 @@ For one library, this reports:
 - **Dependents (runtime hints):** mapped binaries whose bytes contain the library's file name.
 - **Runtime-loaded roots:** mapped libraries that the executable doesn't reach through `DT_NEEDED`, and that no other mapped library lists in `DT_NEEDED`. These were loaded with `dlopen`. For each root, the tool lists the mapped binaries whose bytes contain its file name as loader hints.
 
-Everything is written to `output/<session_id>/<libname>_deps.json`.
+Everything is written to `output/<session_id>/<device path with / replaced by _>_deps.json`, so the `/system` and `/vendor` copies of a library get separate files.
 
 To find which processes on the device map a library, use the sharing tool. It covers every process, not only the captured one:
 
