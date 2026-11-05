@@ -161,6 +161,22 @@ For one library, this reports:
 
 Everything is written to `output/<session_id>/<libname>_deps.json`.
 
+To find which processes on the device map a library, use the sharing tool. It covers every process, not only the captured one:
+
+```bash
+python -I tools/lib_sharing.py <adb-serial> libhidlbase.so
+```
+
+It lists each path the library is mapped from, with the processes that map it. Reading other processes' memory maps needs root (`adb root` on a `userdebug` build). Process names come from `/proc/<pid>/comm`, which is truncated to 15 characters.
+
+To rank a captured process's libraries by memory, in descending order:
+
+```bash
+python -I tools/lib_memory_rank.py output/<session_id> --sort pss --top 20   # or --sort rss; --json writes the ranking
+```
+
+It reads the session's `smaps` file, with no device needed. The output also prints the process totals, which should match the report's memory totals.
+
 Limits:
 - A `dlopen` is recorded only as a hint. The file name may be built at run time, or the loader may be a library the tool can't see, so a root can show "no hint".
 - The search covers only what the process has mapped, not the whole device.
