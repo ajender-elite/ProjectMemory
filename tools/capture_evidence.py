@@ -98,6 +98,14 @@ def main() -> int:
     for token in fd_out.split():
         if token.isdigit():
             capture(f"readlink {p}/fd/{token}", f"{pid}_fd_{token}_link.txt")
+            capture(f"cat {p}/fdinfo/{token}", f"{pid}_fdinfo_{token}.txt")
+
+    for name in ("dmabuf_pss", "dmabuf_rss", "dmabuf_rss_hwm"):
+        capture(f"cat {p}/{name}", f"{pid}_{name}.txt")
+
+    # Socket tables, so each socket descriptor's inode can be matched to its address or path.
+    for table in ("unix", "tcp", "tcp6", "udp", "udp6"):
+        capture(f"cat {p}/net/{table}", f"{pid}_net_{table}.txt")
 
     # Captured again at the end: if starttime changes, the process restarted mid-capture.
     capture(f"cat {p}/stat", f"{pid}_stat_end.txt")

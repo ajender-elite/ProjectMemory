@@ -202,6 +202,18 @@ Each mapping of the library becomes a segment: `code` (executable text), `read_o
 
 The process's heap and other anonymous memory are reported as context, not split by library. A heap allocation can't be linked to the library that made it from `smaps` alone.
 
+To classify every open file descriptor of a captured process and report its memory:
+
+```bash
+python -I tools/fd_report.py output/<session_id>
+```
+
+Each descriptor is classified as `regular_file`, `memfd`, `dmabuf`, `ashmem`, `socket`, `pipe`, `eventfd`, `epoll`, `binder`, `device`, `procfs`, `sysfs`, `anon_inode`, or `other`. The report shows its access mode, offset, and mount ID from `fdinfo`, and the RSS, PSS, and USS of the process's mappings of that same target. A descriptor that is never mapped shows 0.
+
+Process-wide dmabuf totals come from `dmabuf_pss`, `dmabuf_rss`, and `dmabuf_rss_hwm`. These are printed as raw values, because the evidence doesn't state their unit. Descriptors can't be linked to individual dmabuf sizes, so only the process totals are reported. The output is written to `<pid>_fd_report.csv`.
+
+Sessions captured before `fdinfo` was added don't have these files, so re-capture to get them.
+
 ### Tabular output
 
 Tabular results are written as CSV, which opens directly in a spreadsheet and works with `cut` and `sort`. The sharing tool writes `<libname>_sharing.csv` when given a session folder. Nested results, such as the dependency tree, stay in JSON.

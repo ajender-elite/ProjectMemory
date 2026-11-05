@@ -67,6 +67,9 @@ def main() -> int:
     code, out = run(str(TOOLS / "lib_memory_rank.py"), str(session), "--sort", "pss")
     record("memory_rank", pid, code, out)
 
+    code, out = run(str(TOOLS / "fd_report.py"), str(session))
+    record("fd_report", pid, code, out)
+
     smaps = (session / "evidence" / f"{pid}_smaps.txt").read_text(encoding="utf-8", errors="replace")
     libraries: list[str] = []
     for line in smaps.splitlines():
