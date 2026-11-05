@@ -1,19 +1,20 @@
-"""Verify an output directory. Exit 0 only if every check passes.
+"""Verify a session's dump. Exit 0 only if every check passes.
 
 Usage:
-    python -I tools/verify.py <output_dir>
+    python -I tools/verify.py <session_dir>
 
-Expects <output_dir>/evidence/ (raw files and manifest.json) and
-<output_dir>/<pid>_pid_analyze_dump.json. The verbose file is checked if present.
+Expects <session_dir>/evidence/ (raw files and manifest.json) and
+<session_dir>/<pid>_pid_analyze_dump.json.
 
 Checks:
   1. Integrity: every evidence file matches its manifest SHA-256 and size.
-  2. Reproducibility: replaying the evidence reproduces the dump
+  2. Dump: validates against schemas/analyzer-dump.schema.json.
+  3. Report: the dump's report validates against schemas/analyzer-report.schema.json.
+  4. Embedded evidence: each item's hash matches the file on disk and its content.
+  5. Reproducibility: replaying the evidence reproduces the dump's report
      (generated_at_utc excluded).
-  3. Schema: the dump validates against schemas/analyzer-report.schema.json.
-  4. Independent cross-checks: values recomputed from raw files with plain
+  6. Independent cross-checks: values recomputed from raw files with plain
      regex code, not the analyzer's parsers.
-  5. Verbose file (if present): validates, and its embedded hashes match disk.
 """
 
 import hashlib
@@ -37,19 +38,26 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     results.append((name, bool(ok), detail))
 
 
+def first_errors(schema: dict, document: object) -> str:
+    errors = sorted(
+        jsonschema.Draft202012Validator(schema).iter_errors(document),
+        key=lambda err: list(err.path),
+    )
+    return "; ".join(f"{'/'.join(str(p) for p in e.path)}: {e.message}" for e in errors[:3]), errors
+
+
 def main() -> int:
-    output_dir = pathlib.Path(sys.argv[1]).resolve()
-    evidence_dir = output_dir / "evidence"
+    session_dir = pathlib.Path(sys.argv[1]).resolve()
+    evidence_dir = session_dir / "evidence"
     manifest = json.loads((evidence_dir / "manifest.json").read_text(encoding="utf-8"))
     entries = manifest["entries"]
     pid = manifest["pid"]
-    dump_file = output_dir / f"{pid}_pid_analyze_dump.json"
-    report = json.loads(dump_file.read_text(encoding="utf-8"))
-    schema = json.loads(
-        (REPO / "schemas" / "analyzer-report.schema.json").read_text(encoding="utf-8")
-    )
+    dump = json.loads((session_dir / f"{pid}_pid_analyze_dump.json").read_text(encoding="utf-8"))
+    report = dump["report"]
+    dump_schema = json.loads((REPO / "schemas" / "analyzer-dump.schema.json").read_text(encoding="utf-8"))
+    report_schema = json.loads((REPO / "schemas" / "analyzer-report.schema.json").read_text(encoding="utf-8"))
 
-    # 1. Integrity
+    # 1. Integrity of the raw files
     bad = []
     for e in entries:
         data = (evidence_dir / e["file"]).read_bytes()
@@ -58,26 +66,37 @@ def main() -> int:
     check("evidence files match manifest SHA-256 and size", not bad,
           ", ".join(bad) or f"{len(entries)} files")
 
-    # 2. Reproducibility
+    # 2. Dump schema
+    detail, errors = first_errors(dump_schema, dump)
+    check("dump validates against analyzer-dump schema", not errors, detail)
+
+    # 3. Report schema
+    detail, errors = first_errors(report_schema, report)
+    check("dump report validates against analyzer-report schema", not errors, detail)
+
+    # 4. Embedded evidence matches disk
+    mismatched = []
+    for item in dump["evidence"]:
+        raw = (evidence_dir / item["file"]).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != item["sha256"] or len(raw) != item["bytes"]:
+            mismatched.append(item["file"])
+        elif raw.decode("utf-8", "replace") != item["content"]:
+            mismatched.append(item["file"] + " (content)")
+    check("embedded evidence matches files on disk", not mismatched,
+          ", ".join(mismatched) or f"{len(dump['evidence'])} items")
+
+    # 5. Reproducibility
     def without_timestamp(doc: dict) -> dict:
         doc = json.loads(json.dumps(doc, default=str))
-        doc["report"].pop("generated_at_utc", None)
+        doc.pop("generated_at_utc", None)
+        doc.get("report", {}).pop("generated_at_utc", None)
         return doc
 
-    fresh = replay_report.replay(output_dir)
-    check("replay reproduces the dump", without_timestamp(fresh) == without_timestamp(report))
+    fresh = replay_report.replay(session_dir)
+    check("replay reproduces the dump's report",
+          without_timestamp(fresh) == without_timestamp(report))
 
-    # 3. Schema
-    errors = sorted(
-        jsonschema.Draft202012Validator(schema).iter_errors(report),
-        key=lambda err: list(err.path),
-    )
-    detail = "; ".join(
-        f"{'/'.join(str(p) for p in err.path)}: {err.message}" for err in errors[:3]
-    )
-    check("dump validates against analyzer-report schema", not errors, detail)
-
-    # 4. Independent cross-checks (no analyzer code)
+    # 6. Independent cross-checks (no analyzer code)
     by_command: dict[str, dict] = {}
     for e in entries:
         by_command.setdefault(e["command"], e)
@@ -120,7 +139,10 @@ def main() -> int:
         check("dumpsys TOTAL line present", False, "no TOTAL row found")
 
     stat_start = raw(f"cat {p}/stat")
-    stat_end = (evidence_dir / next(e["file"] for e in entries if e["command"] == f"cat {p}/stat" and e["file"].endswith("stat_end.txt"))).read_bytes().decode("utf-8", "replace")
+    stat_end_entry = next(
+        e for e in entries if e["command"] == f"cat {p}/stat" and e["file"].endswith("stat_end.txt")
+    )
+    stat_end = (evidence_dir / stat_end_entry["file"]).read_bytes().decode("utf-8", "replace")
 
     def comm_and_starttime(stat: str) -> tuple[str, str]:
         comm = stat[stat.index("(") + 1 : stat.rindex(")")]
@@ -171,32 +193,6 @@ def main() -> int:
     fd_total = ((report.get("file_descriptors") or {}).get("summary") or {}).get("total")
     check("fd count equals raw fd directory", fd_total == len(fds),
           f"report {fd_total} vs raw {len(fds)}")
-
-    # 5. Verbose file, if present
-    verbose_path = output_dir / f"{pid}_pid_analyze_verbose.json"
-    if verbose_path.exists():
-        verbose = json.loads(verbose_path.read_text(encoding="utf-8"))
-        vschema = json.loads(
-            (REPO / "schemas" / "analyzer-verbose.schema.json").read_text(encoding="utf-8")
-        )
-        verrors = sorted(
-            jsonschema.Draft202012Validator(vschema).iter_errors(verbose),
-            key=lambda err: list(err.path),
-        )
-        vdetail = "; ".join(
-            f"{'/'.join(str(p) for p in err.path)}: {err.message}" for err in verrors[:3]
-        )
-        check("verbose file validates against verbose schema", not verrors, vdetail)
-        mismatched = [
-            item["file"]
-            for item in verbose["evidence"]
-            if hashlib.sha256((evidence_dir / item["file"]).read_bytes()).hexdigest()
-            != item["sha256"]
-        ]
-        check("verbose file evidence hashes match files on disk", not mismatched,
-              ", ".join(mismatched) or f"{len(verbose['evidence'])} items")
-        check("verbose file embeds the same report as the dump",
-              verbose["report"] == report)
 
     width = max(len(name) for name, _, _ in results)
     failed = 0

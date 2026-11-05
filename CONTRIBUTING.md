@@ -329,8 +329,7 @@ Use the evidence workflow in the README. It checks the analyzer's output against
 ```bash
 adb devices
 python -I tools/capture_evidence.py <serial> <pid> output
-python -I tools/replay_report.py output/<session_id>
-python -I tools/build_verbose.py output/<session_id>
+python -I tools/build_dump.py output/<session_id>
 python -I tools/verify.py output/<session_id>
 ```
 
@@ -352,8 +351,8 @@ If verification fails, check:
 
 1. Change the section definitions in `tools/gen_schema.py`.
 2. Regenerate: `python -I tools/gen_schema.py schemas/analyzer-report.schema.json`
-3. Replay an existing session (`tools/replay_report.py output/<session_id>`) and run `tools/verify.py output/<session_id>`. The dump must validate.
-4. If you change `build_report`, update `schemas/analyzer-verbose.schema.json` as well. It is hand-maintained.
+3. Rebuild an existing session's dump (`tools/build_dump.py output/<session_id>`) and run `tools/verify.py output/<session_id>`. Both the dump and its report must validate.
+4. If the dump's structure changes, update `schemas/analyzer-dump.schema.json`. It is hand-maintained.
 
 Schema changes follow the rule in the FAQ: add fields, don't remove them.
 

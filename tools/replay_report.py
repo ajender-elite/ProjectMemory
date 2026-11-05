@@ -1,10 +1,6 @@
-"""Rebuild <pid>_pid_analyze_dump.json from captured evidence, with no device access.
+"""Rebuild the analyzer report from a session's captured evidence, with no device.
 
-Usage:
-    python -I tools/replay_report.py <output_dir>
-
-Reads <output_dir>/evidence/manifest.json and the raw files beside it, runs the
-analyzer from this repository, and writes <output_dir>/<pid>_pid_analyze_dump.json.
+replay(session_dir) returns the report dict. tools/build_dump.py writes it out.
 """
 
 import json
@@ -55,18 +51,13 @@ class ReplayAdb:
         return self.normalize(raw.decode("utf-8", "replace"))
 
 
-def load_manifest(output_dir: pathlib.Path) -> dict:
-    path = output_dir / "evidence" / "manifest.json"
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def replay(output_dir: pathlib.Path) -> dict:
+def replay(session_dir: pathlib.Path) -> dict:
     sys.path.insert(0, str(REPO))
     import AndroidProcessAnalyzer as analyzer
 
-    manifest = load_manifest(output_dir)
+    manifest = json.loads((session_dir / "evidence" / "manifest.json").read_text(encoding="utf-8"))
     client = ReplayAdb(
-        output_dir / "evidence",
+        session_dir / "evidence",
         manifest["entries"],
         analyzer.AdbClient._normalize_text,
     )
@@ -91,19 +82,3 @@ def replay(output_dir: pathlib.Path) -> dict:
     return analyzer.build_report(result)
 
 
-def dump_path(output_dir: pathlib.Path, pid: int) -> pathlib.Path:
-    return output_dir / f"{pid}_pid_analyze_dump.json"
-
-
-def main() -> int:
-    output_dir = pathlib.Path(sys.argv[1]).resolve()
-    pid = load_manifest(output_dir)["pid"]
-    report = replay(output_dir)
-    out = dump_path(output_dir, pid)
-    out.write_text(json.dumps(report, indent=2, default=str) + "\n", encoding="utf-8")
-    print(f"wrote {out}")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

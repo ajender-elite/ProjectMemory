@@ -1,19 +1,20 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "Android Process Analyzer verbose capture (schema_version 3.0-verbose)",
-  "description": "json/verbose.json: the analyzer report plus every raw evidence file captured from the device, inline. Each evidence item keeps the exact adb command, exit code, byte count and SHA-256 of the raw bytes. The content field is the UTF-8 decoding of those bytes, with invalid sequences replaced; the SHA-256 identifies the raw bytes.",
+  "title": "Android Process Analyzer dump (schema_version 3.0-dump)",
+  "description": "<pid>_pid_analyze_dump.json: one file per capture session. It holds the full analyzer report (validated by schemas/analyzer-report.schema.json) and every raw evidence file captured from the device, inline. Each evidence item keeps the exact adb command, exit code, byte count and SHA-256 of the raw bytes. The content field is the UTF-8 decoding of those bytes, with invalid sequences replaced; the SHA-256 identifies the raw bytes.",
   "type": "object",
-  "required": ["schema_version", "pid", "adb_serial", "captured_utc", "analyzer_repo_commit", "report", "evidence"],
+  "required": ["schema_version", "session_id", "pid", "adb_serial", "captured_utc", "analyzer_repo_commit", "report", "evidence"],
   "additionalProperties": false,
   "properties": {
-    "schema_version": { "const": "3.0-verbose" },
+    "schema_version": { "const": "3.0-dump" },
+    "session_id": { "type": "string", "minLength": 1 },
     "pid": { "type": "integer", "minimum": 1 },
     "adb_serial": { "type": "string", "minLength": 1 },
     "captured_utc": { "type": "string", "format": "date-time" },
     "analyzer_repo_commit": { "type": ["string", "null"], "description": "Git commit of the analyzer used for the capture; null if git was unavailable." },
     "report": {
       "type": "object",
-      "description": "Same document as json/report.json (validated by schemas/analyzer-report.schema.json)."
+      "description": "The analyzer report. Same structure as the output of AndroidProcessAnalyzer.py analyze --format json."
     },
     "evidence": {
       "type": "array",
