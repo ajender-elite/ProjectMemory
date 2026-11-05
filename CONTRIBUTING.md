@@ -360,6 +360,19 @@ Schema changes follow the rule in the FAQ: add fields, don't remove them.
 
 `output/` contains raw device data and is git-ignored. Never commit it, and don't paste its contents into issues or PRs. Scripts that read captured or downloaded content should run with `python -I`, which ignores the current directory and `PYTHONPATH`.
 
+### Library Dependency Tool
+
+`tools/lib_deps.py` reads ELF headers from a session's cached libraries, pulling them from the device on demand. Run it with `python -I tools/lib_deps.py output/<session_id> <libname>`.
+
+Rules when changing it:
+
+- **Static and runtime edges stay separate.** `DT_NEEDED` edges are facts. A `dlopen` edge is inferred, so it is always reported as a hint, never as a dependency.
+- **Stay within the mapped set.** The tool answers "what does this process load", not "what in the device could load this". Widening the search means pulling the whole device, which is a different and much heavier mode.
+- **Reuse the analyzer's ELF reader.** `ElfReader` is in `AndroidProcessAnalyzer.py`. Don't add a second ELF parser.
+- **Keep unresolved names visible.** Anything the search path can't resolve goes under `unresolved`. Don't drop it silently.
+
+To test a change, run the tool against an existing session and check that the runtime roots include the HAL modules the process actually loads. Also check that a library which appears in `DT_NEEDED` is never listed as a runtime root.
+
 ### Profile Performance
 
 ```bash
