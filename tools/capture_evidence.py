@@ -93,6 +93,10 @@ def main() -> int:
     for token in task_out.split():
         if token.isdigit():
             capture(f"cat {p}/task/{token}/stat", f"{pid}_task_{token}_stat.txt")
+            capture(f"cat {p}/task/{token}/status", f"{pid}_task_{token}_status.txt")
+            capture(f"cat {p}/task/{token}/comm", f"{pid}_task_{token}_comm.txt")
+            capture(f"cat {p}/task/{token}/wchan", f"{pid}_task_{token}_wchan.txt")
+            capture(f"cat {p}/task/{token}/schedstat", f"{pid}_task_{token}_schedstat.txt")
 
     fd_out = capture(f"ls {p}/fd", f"{pid}_fd_list.txt").decode("utf-8", "replace")
     for token in fd_out.split():

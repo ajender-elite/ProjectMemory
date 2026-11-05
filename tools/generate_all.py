@@ -70,6 +70,9 @@ def main() -> int:
     code, out = run(str(TOOLS / "fd_report.py"), str(session))
     record("fd_report", pid, code, out)
 
+    code, out = run(str(TOOLS / "thread_report.py"), str(session))
+    record("thread_report", pid, code, out)
+
     smaps = (session / "evidence" / f"{pid}_smaps.txt").read_text(encoding="utf-8", errors="replace")
     libraries: list[str] = []
     for line in smaps.splitlines():
