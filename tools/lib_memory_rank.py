@@ -8,7 +8,7 @@ attributed to its path, and the Rss, Pss, Private and Shared fields are summed p
 file. Anonymous mappings are excluded from the library list but included in the
 process totals, which are printed for comparison.
 
-Writes <session_dir>/<pid>_lib_memory_rank.csv, one row per library, in the same
+Writes <session_dir>/<pid>_lib_memory_rank.csv, one row per file-backed path, in the same
 order as the printed table.
 """
 
@@ -21,7 +21,20 @@ import sys
 
 HEADER = re.compile(r"^[0-9a-f]+-[0-9a-f]+ \S{4} \S+ \S+ \S+\s+(.*)$")
 FIELD = re.compile(r"^(Rss|Pss|SwapPss|Private_Clean|Private_Dirty|Shared_Clean|Shared_Dirty):\s+(\d+) kB")
-CSV_COLUMNS = ["rank", "library", "rss_kb", "pss_kb", "uss_kb", "swap_pss_kb", "shared_kb"]
+CSV_COLUMNS = ["rank", "kind", "path", "rss_kb", "pss_kb", "uss_kb", "swap_pss_kb", "shared_kb"]
+
+
+def kind_of(path: str) -> str:
+    name = path.rsplit("/", 1)[-1]
+    if path.startswith("/dev/"):
+        return "device_or_property"
+    if path.startswith("/memfd:"):
+        return "memfd"
+    if ".so" in name:
+        return "shared_library"
+    if "/bin/" in path:
+        return "executable"
+    return "other_file"
 
 
 def rank(smaps_text: str) -> tuple[dict[str, dict[str, int]], dict[str, int]]:
@@ -66,6 +79,7 @@ def main() -> int:
     parser.add_argument("session_dir", type=pathlib.Path)
     parser.add_argument("--sort", choices=["pss", "rss"], default="pss")
     parser.add_argument("--top", type=int, default=0, help="show and write only the first N rows (0 = all)")
+    parser.add_argument("--libs-only", action="store_true", help="rank only shared libraries (names containing .so)")
     args = parser.parse_args()
 
     session = args.session_dir.resolve()
@@ -74,29 +88,34 @@ def main() -> int:
     smaps = (session / "evidence" / f"{pid}_smaps.txt").read_text(encoding="utf-8", errors="replace")
 
     per_file, totals = rank(smaps)
-    libraries = {path: values for path, values in per_file.items() if ".so" in path.rsplit("/", 1)[-1]}
+    selected = {
+        path: values
+        for path, values in per_file.items()
+        if not args.libs_only or kind_of(path) == "shared_library"
+    }
     key = f"{args.sort}_kb"
-    ordered = sorted(libraries.items(), key=lambda item: item[1][key], reverse=True)
+    ordered = sorted(selected.items(), key=lambda item: item[1][key], reverse=True)
     if args.top:
         ordered = ordered[: args.top]
 
-    sum_lib_rss = sum(v["rss_kb"] for v in libraries.values())
-    sum_lib_pss = sum(v["pss_kb"] for v in libraries.values())
-    print(f"pid {pid}: {len(libraries)} shared libraries, sorted by {args.sort.upper()} (descending)")
-    print(f"{'RSS kB':>8} {'PSS kB':>8} {'USS kB':>8} {'SwapPSS':>8}  library")
+    sum_rss = sum(v["rss_kb"] for v in selected.values())
+    sum_pss = sum(v["pss_kb"] for v in selected.values())
+    scope = "shared libraries" if args.libs_only else "file-backed mappings"
+    print(f"pid {pid}: {len(selected)} {scope}, sorted by {args.sort.upper()} (descending)")
+    print(f"{'RSS kB':>8} {'PSS kB':>8} {'USS kB':>8} {'SwapPSS':>8}  {'kind':<18} path")
     for path, values in ordered:
         print(f"{values['rss_kb']:>8} {values['pss_kb']:>8} {values['uss_kb']:>8} "
-              f"{values['swap_pss_kb']:>8}  {path}")
+              f"{values['swap_pss_kb']:>8}  {kind_of(path):<18} {path}")
     print("-" * 40)
-    print(f"libraries total: RSS {sum_lib_rss} kB, PSS {sum_lib_pss} kB")
-    print(f"process total (all mappings): RSS {totals['rss']} kB, PSS {totals['pss']} kB")
+    print(f"{scope} total: RSS {sum_rss} kB, PSS {sum_pss} kB")
+    print(f"process total (all mappings, incl. anonymous): RSS {totals['rss']} kB, PSS {totals['pss']} kB")
 
     out = session / f"{pid}_lib_memory_rank.csv"
     with out.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=CSV_COLUMNS)
         writer.writeheader()
         for rank_number, (path, values) in enumerate(ordered, start=1):
-            writer.writerow({"rank": rank_number, "library": path, **values})
+            writer.writerow({"rank": rank_number, "kind": kind_of(path), "path": path, **values})
     print(f"wrote {out}")
     return 0
 

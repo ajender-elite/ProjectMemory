@@ -172,10 +172,14 @@ It lists each path the library is mapped from, with the processes that map it. R
 To rank a captured process's libraries by memory, in descending order:
 
 ```bash
-python -I tools/lib_memory_rank.py output/<session_id> --sort pss --top 20   # or --sort rss
+python -I tools/lib_memory_rank.py output/<session_id> --sort pss            # all file-backed mappings
+python -I tools/lib_memory_rank.py output/<session_id> --sort rss --libs-only  # shared libraries only
+python -I tools/lib_memory_rank.py output/<session_id> --sort pss --top 20    # first 20 rows only
 ```
 
-It reads the session's `smaps` file, with no device needed. It writes `output/<session_id>/<pid>_lib_memory_rank.csv`, one row per library, and prints the same table with the process totals, which should match the report's memory totals.
+By default it ranks every file-backed mapping, not only `.so` files. The `kind` column tells them apart: `shared_library`, `executable`, `device_or_property`, `memfd`, or `other_file`. Anonymous memory is excluded from the rows, but the process total line includes it.
+
+It reads the session's `smaps` file, with no device needed. It writes `output/<session_id>/<pid>_lib_memory_rank.csv`, one row per path, and prints the same table. The process total should match the report's memory totals.
 
 To break one library into segments at the snapshot:
 
