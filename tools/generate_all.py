@@ -17,6 +17,7 @@ in one library's step is recorded and the run continues. The summary is written 
 <session>/generate_all_summary.csv.
 """
 
+import argparse
 import csv
 import pathlib
 import re
@@ -34,8 +35,15 @@ def run(*args: str) -> tuple[int, str]:
 
 
 def main() -> int:
-    serial, pid, output_root = sys.argv[1], sys.argv[2], pathlib.Path(sys.argv[3])
-    session_id = sys.argv[4] if len(sys.argv) > 4 else str(uuid.uuid4())
+    parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    parser.add_argument("serial")
+    parser.add_argument("pid")
+    parser.add_argument("output_root", type=pathlib.Path)
+    parser.add_argument("session_id", nargs="?", default=None)
+    parser.add_argument("--scenario", default=None, help="what the device was doing, recorded in the session metadata")
+    args = parser.parse_args()
+    serial, pid, output_root = args.serial, args.pid, args.output_root
+    session_id = args.session_id or str(uuid.uuid4())
     session = output_root / session_id
     rows: list[dict[str, str]] = []
 
@@ -44,7 +52,10 @@ def main() -> int:
                      "detail": detail.splitlines()[-1] if detail else ""})
         print(f"[{'ok' if code == 0 else 'FAILED'}] {step} {target}")
 
-    code, out = run(str(TOOLS / "capture_evidence.py"), serial, pid, str(output_root), session_id)
+    capture_args = [str(TOOLS / "capture_evidence.py"), serial, pid, str(output_root), session_id]
+    if args.scenario is not None:
+        capture_args += ["--scenario", args.scenario]
+    code, out = run(*capture_args)
     record("capture", pid, code, out)
     if code != 0:
         print(out)

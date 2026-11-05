@@ -112,10 +112,21 @@ Use this workflow to keep a complete, verifiable record of one process. It needs
 ### 1. Capture raw files
 
 ```bash
-python -I tools/capture_evidence.py <adb-serial> <pid> output [session_id]
+python -I tools/capture_evidence.py <adb-serial> <pid> output [session_id] [--scenario TEXT]
 ```
 
-Each run creates `output/<session_id>/`. `session_id` defaults to a new UUID, and an existing session is never overwritten. Each command's output is saved byte for byte as `output/<session_id>/evidence/<pid>_<name>`, and `manifest.json` in the same folder records each command, its exit code, byte count, and SHA-256. The manifest also records the analyzer's git commit. Captured commands are the same strings the analyzer sends, plus `dumpsys meminfo`, a binder log read, and a start and end `stat` read. Comparing the two `stat` reads detects a process restart during capture.
+`--scenario` records what the device was doing, such as `idle` or `playback`. It is stored in the session metadata. Each run creates `output/<session_id>/`. `session_id` defaults to a new UUID, and an existing session is never overwritten. Each command's output is saved byte for byte as `output/<session_id>/evidence/<pid>_<name>`, and `manifest.json` in the same folder records each command, its exit code, byte count, and SHA-256. The manifest also records the analyzer's git commit. Captured commands are the same strings the analyzer sends, plus `dumpsys meminfo`, a binder log read, and a start and end `stat` read. Comparing the two `stat` reads detects a process restart during capture.
+
+### Session metadata
+
+Every dump carries a `metadata` block with:
+
+- `pid`, `process_name`, and `collected_utc` (the capture timestamp)
+- `source`: `capture` if read at capture time, `backfilled` if read from the device afterwards
+- `scenario`: what the device was doing, from `--scenario`; `null` if it wasn't given
+- `device`: `build_fingerprint`, `android_release`, `sdk_level`, `build_id`, `build_type`, `product_model`, `product_device`, `hardware`
+
+To add metadata to a session captured before this existed, run `python -I tools/session_metadata.py <adb-serial> output/<session_id> --backfill [--scenario TEXT]`, then rebuild the dump.
 
 ### 2. Build the dump
 

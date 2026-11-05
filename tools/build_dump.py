@@ -46,6 +46,7 @@ def build_dump(session_dir: pathlib.Path) -> dict:
         "adb_serial": manifest["adb_serial"],
         "captured_utc": manifest["captured_utc"],
         "analyzer_repo_commit": manifest.get("analyzer_repo_commit"),
+        "metadata": manifest.get("metadata"),
         "report": replay_report.replay(session_dir),
         "evidence": items,
     }

@@ -10,6 +10,7 @@ so later steps use exactly what the device returned. An existing session is
 never overwritten.
 """
 
+import argparse
 import datetime
 import hashlib
 import json
@@ -19,6 +20,9 @@ import sys
 import uuid
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "tools"))
+
+from session_metadata import metadata_block  # noqa: E402
 
 
 def repo_commit() -> str | None:
@@ -31,10 +35,15 @@ def repo_commit() -> str | None:
 
 
 def main() -> int:
-    serial = sys.argv[1]
-    pid = int(sys.argv[2])
-    output_root = pathlib.Path(sys.argv[3])
-    session_id = sys.argv[4] if len(sys.argv) > 4 else str(uuid.uuid4())
+    parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    parser.add_argument("serial")
+    parser.add_argument("pid", type=int)
+    parser.add_argument("output_root", type=pathlib.Path)
+    parser.add_argument("session_id", nargs="?", default=None)
+    parser.add_argument("--scenario", default=None, help="what the device was doing, e.g. 'idle' or 'playback'")
+    args = parser.parse_args()
+    serial, pid, output_root = args.serial, args.pid, args.output_root
+    session_id = args.session_id or str(uuid.uuid4())
     session_dir = output_root / session_id
     if session_dir.exists():
         print(f"error: {session_dir} already exists; choose another session_id", file=sys.stderr)
@@ -64,7 +73,8 @@ def main() -> int:
 
     p = f"/proc/{pid}"
     # Commands are the exact strings AndroidProcessAnalyzer.py sends to adb.
-    capture(f"cat {p}/stat", f"{pid}_stat_start.txt")
+    stat_start = capture(f"cat {p}/stat", f"{pid}_stat_start.txt").decode("utf-8", "replace")
+    process_name = stat_start[stat_start.index("(") + 1 : stat_start.rindex(")")] if ")" in stat_start else None
     capture(f"cat {p}/status", f"{pid}_status.txt")
     capture(f"cat {p}/cmdline", f"{pid}_cmdline.txt")
     capture(f"readlink {p}/exe", f"{pid}_exe_link.txt")
@@ -98,6 +108,7 @@ def main() -> int:
         "adb_serial": serial,
         "pid": pid,
         "analyzer_repo_commit": repo_commit(),
+        "metadata": metadata_block(serial, pid, process_name, args.scenario, "capture"),
         "entries": entries,
     }
     (evidence_dir / "manifest.json").write_text(
@@ -105,7 +116,7 @@ def main() -> int:
     )
     failed = sum(1 for e in entries if e["exit_code"] != 0)
     print(f"captured {len(entries)} commands ({failed} nonzero) into {session_dir}")
-    print(f"next: python -I tools/replay_report.py {session_dir}")
+    print(f"next: python -I tools/build_dump.py {session_dir}")
     return 0
 
 

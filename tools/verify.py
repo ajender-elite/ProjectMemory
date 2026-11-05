@@ -69,6 +69,9 @@ def main() -> int:
     # 2. Dump schema
     detail, errors = first_errors(dump_schema, dump)
     check("dump validates against analyzer-dump schema", not errors, detail)
+    check("dump metadata matches the capture manifest",
+          dump.get("metadata") == manifest.get("metadata"),
+          f"fingerprint {(dump.get('metadata') or {}).get('device', {}).get('build_fingerprint')}")
 
     # 3. Report schema
     detail, errors = first_errors(report_schema, report)

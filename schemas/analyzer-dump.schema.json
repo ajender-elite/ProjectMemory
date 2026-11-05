@@ -3,7 +3,7 @@
   "title": "Android Process Analyzer dump (schema_version 3.0-dump)",
   "description": "<pid>_pid_analyze_dump.json: one file per capture session. It holds the full analyzer report (validated by schemas/analyzer-report.schema.json) and every raw evidence file captured from the device, inline. Each evidence item keeps the exact adb command, exit code, byte count and SHA-256 of the raw bytes. The content field is the UTF-8 decoding of those bytes, with invalid sequences replaced; the SHA-256 identifies the raw bytes.",
   "type": "object",
-  "required": ["schema_version", "session_id", "pid", "adb_serial", "captured_utc", "analyzer_repo_commit", "report", "evidence"],
+  "required": ["schema_version", "session_id", "pid", "adb_serial", "captured_utc", "analyzer_repo_commit", "metadata", "report", "evidence"],
   "additionalProperties": false,
   "properties": {
     "schema_version": { "const": "3.0-dump" },
@@ -12,6 +12,34 @@
     "adb_serial": { "type": "string", "minLength": 1 },
     "captured_utc": { "type": "string", "format": "date-time" },
     "analyzer_repo_commit": { "type": ["string", "null"], "description": "Git commit of the analyzer used for the capture; null if git was unavailable." },
+    "metadata": {
+      "type": "object",
+      "required": ["pid", "adb_serial", "collected_utc", "source", "scenario", "process_name", "device"],
+      "additionalProperties": false,
+      "properties": {
+        "pid": { "type": "integer", "minimum": 1 },
+        "adb_serial": { "type": "string", "minLength": 1 },
+        "collected_utc": { "type": "string", "format": "date-time" },
+        "source": { "enum": ["capture", "backfilled"], "description": "capture: read at capture time. backfilled: read from the device after capture." },
+        "scenario": { "type": ["string", "null"], "description": "What the device was doing during capture. Null when not recorded." },
+        "process_name": { "type": ["string", "null"] },
+        "device": {
+          "type": "object",
+          "required": ["build_fingerprint", "android_release", "sdk_level", "build_id", "build_type", "product_model", "product_device", "hardware"],
+          "additionalProperties": false,
+          "properties": {
+            "build_fingerprint": { "type": "string", "minLength": 1 },
+            "android_release": { "type": "string" },
+            "sdk_level": { "type": "string" },
+            "build_id": { "type": "string" },
+            "build_type": { "type": "string" },
+            "product_model": { "type": "string" },
+            "product_device": { "type": "string" },
+            "hardware": { "type": "string" }
+          }
+        }
+      }
+    },
     "report": {
       "type": "object",
       "description": "The analyzer report. Same structure as the output of AndroidProcessAnalyzer.py analyze --format json."
