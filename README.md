@@ -177,6 +177,16 @@ python -I tools/lib_memory_rank.py output/<session_id> --sort pss --top 20   # o
 
 It reads the session's `smaps` file, with no device needed. It writes `output/<session_id>/<pid>_lib_memory_rank.csv`, one row per library, and prints the same table with the process totals, which should match the report's memory totals.
 
+To break one library into segments at the snapshot:
+
+```bash
+python -I tools/lib_segments.py output/<session_id> libar-pal.so
+```
+
+Each mapping of the library becomes a segment: `code` (executable text), `read_only_data`, `data` (the writable `.data`, `.got`, and file-backed `.bss`), and `bss_anon` (the zero-fill `.bss` named `[anon:.bss]`). The output is written to `<libname>_segments.csv`.
+
+The process's heap and other anonymous memory are reported as context, not split by library. A heap allocation can't be linked to the library that made it from `smaps` alone.
+
 ### Tabular output
 
 Tabular results are written as CSV, which opens directly in a spreadsheet and works with `cut` and `sort`. The sharing tool writes `<libname>_sharing.csv` when given a session folder. Nested results, such as the dependency tree, stay in JSON.
